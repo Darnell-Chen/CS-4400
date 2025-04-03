@@ -307,9 +307,29 @@ sp_main: begin
     
     -- Ensure the pilot is located at the airport of the plane that is supporting the flight
     
-    if ()
+    select locationID into person_location from person where personID = ip_personID;
+    select locationID into plane_location from airplane where airlineID = t_support_airline and tail_num = t_support_airline;
+    
+    if person_location is null or plane_location is null or (person_location != plane_location) then
+		leave sp_main;
+	end if;
+    
+    select * from route;
+    select * from route_path;
+    select * from flight;
+    select * from airplane;
     
     -- Assign the pilot to the flight and update their location to be on the plane
+    select * from person;
+    select * from pilot;
+    select * from flight;
+    select * from airport;
+    select * from leg;
+    
+    update pilot
+		set commanding_flight = ip_flightID
+		where personID = ip_personID;
+        
 
 end //
 delimiter ;
