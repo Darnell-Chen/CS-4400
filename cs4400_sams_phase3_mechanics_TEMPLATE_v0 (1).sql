@@ -1069,20 +1069,50 @@ respective flight IDs) that are departing from each airport.*/
 create or replace view flights_on_the_ground (departing_from, num_flights,
 	flight_list, earliest_arrival, latest_arrival, airplane_list) as 
 select
-    ap.airportID as departing_from,
-    count(f.flightID) as num_flights,
-    group_concat(f.flightID order by f.flightID separator ',') as flight_list,
-    min(f.next_time) as earliest_departure, -- Represents earliest next action time (takeoff)
-    max(f.next_time) as latest_departure,  -- Represents latest next action time (takeoff)
-    group_concat(f.support_tail order by f.flightID separator ',') as airplane_list
-from flight f
-join airplane plane on f.support_tail = plane.tail_num
-join airport ap on plane.locationID = ap.locationID -- Find the airport where the plane is
-left join (select routeID, max(sequence) as max_seq from route_path group by routeID) rm
-          on f.routeID = rm.routeID -- Get max sequence for the route
-where f.airplane_status = 'on_ground'
-  and f.progress < ifnull(rm.max_seq, 0) -- Only include flights that have not completed their route
-group by ap.airportID;
+    t.departing_from,
+    count(*) AS num_flights,
+    group_concat(t.flightID order by t.flightID separator ',') as flight_list,
+    min(t.next_time) as earliest_arrival,
+    max(t.next_time) as latest_arrival,
+    group_concat(t.locationID order by t.flightID separator ',') as airplane_list
+from (
+    -- Case 1: If flight has a next leg and hasn't reached its destination
+    select
+        l_next.departure as departing_from,
+        f.flightID,
+        f.next_time,
+        a.locationID
+    from flight f
+    join (
+        select routeID, max(sequence) as max_seq
+        from route_path
+        group by routeID
+    ) as rm on f.routeID = rm.routeID
+    join route_path rp_next on f.routeID = rp_next.routeID and rp_next.sequence = f.progress + 1
+    join leg l_next on rp_next.legID = l_next.legID
+    join airplane a on f.support_airline = a.airlineID and f.support_tail = a.tail_num
+    where f.airplane_status = 'on_ground' and f.progress < rm.max_seq
+
+	union all
+
+    -- Case 2: If Flight has completed its route, therefore has no legs
+    select
+        l_last.arrival as departing_from,
+        f.flightID,
+        f.next_time,
+        a.locationID
+    from flight f
+    join (
+        select routeID, max(sequence) as max_seq
+        from route_path
+        group by routeID
+    ) as rm on f.routeID = rm.routeID
+    join route_path rp_last on f.routeID = rp_last.routeID and rp_last.sequence = rm.max_seq
+    join leg l_last on rp_last.legID = l_last.legID
+    join airplane a on f.support_airline = a.airlineID and f.support_tail = a.tail_num
+    where f.airplane_status = 'on_ground' and f.progress = rm.max_seq
+) t
+group by t.departing_from;
 
 -- [16] people_in_the_air()
 -- -----------------------------------------------------------------------------
