@@ -567,179 +567,91 @@ Also, each passenger must have enough funds to cover the flight.  Finally, there
 must be enough seats to accommodate all boarding passengers. */
 -- -----------------------------------------------------------------------------
 drop procedure if exists passengers_board;
-delimiter //
-create procedure passengers_board (in ip_flightID varchar(50))
-sp_main: begin
-	declare v_flight_exists int;
-    declare v_airplane_status varchar(100);
-    declare v_routeID varchar(50);
-    declare v_current_progress integer;
-    declare v_max_legs integer;
-    declare v_support_tail varchar(50);
-    declare v_plane_locationID varchar(50);
-    declare v_current_airportID varchar(50);
-    declare v_next_legID varchar(50);
-    declare v_next_arrival_airportID varchar(50);
-    declare v_flight_cost decimal(10, 2); -- Assuming cost is decimal
-    declare v_seat_capacity integer;
-    declare v_passengers_on_plane integer;
-    declare v_available_seats integer;
-    declare v_boarding_passengers_count integer;
-
-    -- Temp table to store eligible passengers
-    drop temporary table if exists temp_boarding_passengers;
-    create temporary table temp_boarding_passengers (
-        personID varchar(50) primary key,
-        funds decimal(10, 2)
-    );
-
-    -- === Initial Flight Checks ===
-
-    -- Ensure the flight exists and get basic details
-    select count(*), airplane_status, routeID, progress, support_tail, cost
-    into v_flight_exists, v_airplane_status, v_routeID, v_current_progress, v_support_tail, v_flight_cost
-    from flight
-    where flightID = ip_flightID;
-
-    if v_flight_exists = 0 then
-        -- Flight does not exist
-        leave sp_main;
-    end if;
-
-    -- Ensure that the flight is on the ground
-    if v_airplane_status <> 'on_ground' then
-        -- Flight is not on the ground
-        leave sp_main;
-    end if;
-
-    -- Ensure that the flight has another leg to fly
-    select max(sequence) into v_max_legs from route_path where routeID = v_routeID;
-    if v_max_legs is null or v_current_progress >= v_max_legs then
-        -- Flight has completed its route or route is invalid
-        leave sp_main;
-    end if;
-
-    -- === Gather Flight Location and Next Destination ===
-
-    -- Get airplane details (location, capacity)
-    select ap.locationID, ap.seat_capacity
-    into v_plane_locationID, v_seat_capacity
-    from airplane ap
-    where ap.tail_num = v_support_tail;
-
-    if v_plane_locationID is null then
-         -- Airplane associated with flight not found (data integrity issue)
-        leave sp_main;
-    end if;
-
-    -- Get the current airport ID based on the plane's location
-    select apt.airportID
-    into v_current_airportID
-    from airport apt
-    where apt.locationID = v_plane_locationID;
-
-    if v_current_airportID is null then
-        -- Airplane is not at a recognized airport location
-        leave sp_main;
-    end if;
-
-    -- Get the next leg ID and its arrival airport
-    select rp.legID, l.arrival
-    into v_next_legID, v_next_arrival_airportID
-    from route_path rp
-    join leg l on rp.legID = l.legID
-    where rp.routeID = v_routeID and rp.sequence = v_current_progress + 1;
-
-    if v_next_legID is null then
-        -- Could not determine the next leg (data integrity issue)
-        leave sp_main;
-    end if;
-
-    -- === Identify Eligible Passengers ===
-
-    -- Find passengers at the current airport, who want to go to the flight's next destination,
-    -- and can afford the flight. We assume the passenger's "next" destination is the one
-    -- with the lowest sequence number in their passenger_vacations list.
-    insert into temp_boarding_passengers (personID, funds)
-    select p.personID, p.funds
-    from passenger p
-    join person per on p.personID = per.personID
-    join (
-        -- Subquery to find the lowest sequence vacation destination for each passenger
-        select pv.personID, pv.airportID, pv.sequence
-        from passenger_vacations pv
-        join (
-            select personID, min(sequence) as min_seq
-            from passenger_vacations
-            group by personID
-        ) pv_min on pv.personID = pv_min.personID and pv.sequence = pv_min.min_seq
-    ) as next_vacation on p.personID = next_vacation.personID
-    where
-        per.locationID = v_plane_locationID                     -- Passenger is at the plane's location
-        and next_vacation.airportID = v_next_arrival_airportID  -- Passenger's next destination matches flight's arrival
-        and p.funds >= v_flight_cost;                           -- Passenger can afford the flight
-
-    -- Get the count of passengers attempting to board
-    select count(*) into v_boarding_passengers_count from temp_boarding_passengers;
-
-    if v_boarding_passengers_count = 0 then
-        -- No eligible passengers trying to board
-        drop temporary table if exists temp_boarding_passengers;
-        leave sp_main;
-    end if;
-
-    -- === Check Seat Capacity ===
-
-    -- Count passengers already on the plane (their location matches the plane's location)
-    select count(*)
-    into v_passengers_on_plane
-    from person per
-    join passenger pas on per.personID = pas.personID -- Ensure it's a passenger
-    where per.locationID = v_plane_locationID;
-
-    -- Calculate available seats
-    set v_available_seats = v_seat_capacity - v_passengers_on_plane;
-
-    -- Check if there are enough seats
-    if v_available_seats < v_boarding_passengers_count then
-        -- Not enough seats for everyone trying to board
-        drop temporary table if exists temp_boarding_passengers;
-        leave sp_main; -- Do not board anyone if not all can board
-    end if;
-
-    -- === Board Passengers ===
-
-    -- If enough seats, update location and deduct funds for boarding passengers
-    -- Update person location to the plane's location
-    update person per
-    join temp_boarding_passengers tbp on per.personID = tbp.personID
-    set per.locationID = v_plane_locationID; -- Move them to the plane
-
-    -- Deduct funds from passenger
-    update passenger p
-    join temp_boarding_passengers tbp on p.personID = tbp.personID
-    set p.funds = p.funds - v_flight_cost;
-
-    -- Clean up temporary table
-    drop temporary table if exists temp_boarding_passengers;
-
-	-- Ensure the flight exists
-    -- Ensure that the flight is on the ground
-    -- Ensure that the flight has further legs to be flown
+DELIMITER //
+CREATE PROCEDURE passengers_board(IN ip_flightID VARCHAR(50))
+BEGIN
+    -- Variable declarations
+    DECLARE v_flight_departure CHAR(3);
+    DECLARE v_flight_arrival CHAR(3);
+    DECLARE v_flight_cost INT;
+    DECLARE v_airplane_capacity INT;
+    DECLARE v_current_passenger_count INT;
+    DECLARE v_available_seats INT;
+    DECLARE v_passengers_to_board_count INT;
+    DECLARE v_boarding_location VARCHAR(50);
+    DECLARE v_airplane_location VARCHAR(50);
     
-    -- Determine the number of passengers attempting to board the flight
-    -- Use the following to check:
-		-- The airport the airplane is currently located at
-        -- The passengers are located at that airport
-        -- The passenger's immediate next destination matches that of the flight
-        -- The passenger has enough funds to afford the flight
+    -- Temporary table to store passengers to board
+    DROP TEMPORARY TABLE IF EXISTS temp_passengers_to_board;
+    CREATE TEMPORARY TABLE temp_passengers_to_board (
+        personID VARCHAR(50),
+        funds INT,
+        PRIMARY KEY (personID)
+    );
+    
+    -- SECTION 1: Get flight and airplane information
+    SELECT l.departure, l.arrival, f.cost, a.seat_capacity, ap.locationID, a.locationID
+    INTO v_flight_departure, v_flight_arrival, v_flight_cost, v_airplane_capacity, 
+         v_boarding_location, v_airplane_location
+    FROM flight f
+    JOIN route_path rp ON f.routeID = rp.routeID AND rp.sequence = f.progress + 1
+    JOIN leg l ON rp.legID = l.legID
+    JOIN airplane a ON f.support_airline = a.airlineID AND f.support_tail = a.tail_num
+    JOIN airport ap ON l.departure = ap.airportID
+    WHERE f.flightID = ip_flightID;
+    
+    -- SECTION 2: Calculate available seats
+    SELECT COUNT(*) INTO v_current_passenger_count
+    FROM person
+    WHERE locationID = v_airplane_location;
+    
+    SET v_available_seats = v_airplane_capacity - v_current_passenger_count;
+    
+    -- SECTION 3: Identify eligible passengers
+    SELECT COUNT(*) INTO v_passengers_to_board_count
+    FROM passenger p
+    JOIN person pe ON p.personID = pe.personID
+    JOIN passenger_vacations pv ON p.personID = pv.personID
+    WHERE pe.locationID = v_boarding_location
+      AND pv.airportID = v_flight_arrival
+      AND p.funds >= v_flight_cost
+      AND pe.locationID NOT LIKE 'plane_%';
+    
+    -- SECTION 4: Board passengers if conditions met
+    IF v_available_seats > 0 AND v_passengers_to_board_count > 0 THEN
+        -- Insert eligible passengers into temp table ordered by funds
+        INSERT INTO temp_passengers_to_board
+        SELECT p.personID, p.funds
+        FROM passenger p
+        JOIN person pe ON p.personID = pe.personID
+        JOIN passenger_vacations pv ON p.personID = pv.personID
+        WHERE pe.locationID = v_boarding_location
+          AND pv.airportID = v_flight_arrival
+          AND p.funds >= v_flight_cost
+          AND pe.locationID NOT LIKE 'plane_%'
+        ORDER BY p.funds DESC
+        LIMIT v_available_seats;
         
-	-- Check if there enough seats for all the passengers
-		-- If not, do not add board any passengers
-        -- If there are, board them and deduct their funds
-
-end //
-delimiter ;
+        -- Update passengers from temp table
+        UPDATE person pe
+        JOIN temp_passengers_to_board t ON pe.personID = t.personID
+        SET pe.locationID = v_airplane_location;
+        
+        UPDATE passenger p
+        JOIN temp_passengers_to_board t ON p.personID = t.personID
+        SET p.funds = p.funds - v_flight_cost;
+        
+        -- Update airline revenue
+        UPDATE airline a
+        JOIN flight f ON a.airlineID = f.support_airline
+        SET a.revenue = a.revenue + (v_flight_cost * 
+            (SELECT COUNT(*) FROM temp_passengers_to_board))
+        WHERE f.flightID = ip_flightID;
+        
+        DROP TEMPORARY TABLE IF EXISTS temp_passengers_to_board;
+    END IF;
+END //
+DELIMITER ;
 
 -- [9] passengers_disembark()
 -- -----------------------------------------------------------------------------
@@ -747,129 +659,84 @@ delimiter ;
 at its current airport.  The passengers must be on that flight, and the flight must
 be located at the destination airport as referenced by the ticket. */
 -- -----------------------------------------------------------------------------
-drop procedure if exists passengers_disembark;
-delimiter //
-create procedure passengers_disembark (in ip_flightID varchar(50))
-sp_main: begin
-  -- Declare variables
-    declare v_flight_exists int;
-    declare v_airplane_status varchar(100);
-    declare v_support_tail varchar(50);
-    declare v_plane_locationID varchar(50);
-    declare v_current_airportID varchar(50);
+DROP PROCEDURE IF EXISTS passengers_disembark;
+DELIMITER //
+CREATE PROCEDURE passengers_disembark (IN ip_flightID VARCHAR(50))
+sp_main: BEGIN
+    DECLARE v_flight_arrival CHAR(3);
+    DECLARE v_airplane_location VARCHAR(50);
+    DECLARE v_disembark_location VARCHAR(50);
+    DECLARE v_flight_status VARCHAR(100);
+    DECLARE v_support_airline VARCHAR(50);
+    DECLARE v_support_tail VARCHAR(50);
 
-    -- Temp table to store passengers who should disembark
-    drop temporary table if exists temp_disembarking_passengers;
-    create temporary table temp_disembarking_passengers (
-        personID varchar(50) primary key,
-        vacation_sequence int -- Store the sequence number of the vacation step being completed
+    -- Step 1: Ensure flight exists and is on the ground
+    SELECT f.airplane_status, f.support_airline, f.support_tail
+    INTO v_flight_status, v_support_airline, v_support_tail
+    FROM flight f
+    WHERE f.flightID = ip_flightID;
+
+    IF v_flight_status IS NULL THEN
+        LEAVE sp_main; -- Flight doesn't exist
+    END IF;
+
+    IF v_flight_status <> 'on_ground' THEN
+        LEAVE sp_main; -- Flight not on ground
+    END IF;
+
+    -- Step 2: Get arrival airport from current leg (based on progress)
+    SELECT l.arrival
+    INTO v_flight_arrival
+    FROM flight f
+    JOIN route_path rp ON f.routeID = rp.routeID AND rp.sequence = f.progress
+    JOIN leg l ON rp.legID = l.legID
+    WHERE f.flightID = ip_flightID;
+
+    -- Step 3: Get airplane’s current location
+    SELECT a.locationID INTO v_airplane_location
+    FROM airplane a
+    WHERE a.airlineID = v_support_airline AND a.tail_num = v_support_tail;
+
+    -- Step 4: Get airport’s locationID
+    SELECT ap.locationID INTO v_disembark_location
+    FROM airport ap
+    WHERE ap.airportID = v_flight_arrival;
+
+    -- Step 5: Identify passengers to disembark
+    CREATE TEMPORARY TABLE IF NOT EXISTS temp_disembarking_passengers (
+        personID VARCHAR(50) PRIMARY KEY
     );
 
-    -- === Initial Flight Checks ===
+    DELETE FROM temp_disembarking_passengers;
 
-    -- Ensure the flight exists and get its status and plane tail number
-    select count(*), airplane_status, support_tail
-    into v_flight_exists, v_airplane_status, v_support_tail
-    from flight
-    where flightID = ip_flightID;
+    INSERT INTO temp_disembarking_passengers
+    SELECT p.personID
+    FROM person p
+    JOIN passenger_vacations pv ON p.personID = pv.personID
+    WHERE p.locationID = v_airplane_location
+      AND pv.sequence = 1
+      AND pv.airportID = v_flight_arrival;
 
-    if v_flight_exists = 0 then
-        -- Flight does not exist
-        leave sp_main;
-    end if;
+    -- Step 6: Move disembarking passengers to airport
+    UPDATE person p
+    JOIN temp_disembarking_passengers t ON p.personID = t.personID
+    SET p.locationID = v_disembark_location;
 
-    -- Ensure that the flight is on the ground (passengers can only disembark when landed)
-    -- The prompt description says "Ensure that the flight is in the air" which contradicts
-    -- the goal of disembarking AT an airport. Assuming 'on_ground' is the correct prerequisite.
-    if v_airplane_status <> 'on_ground' then
-        -- Flight is not on the ground
-        leave sp_main;
-    end if;
+    -- Step 7: Remove first vacation
+    DELETE pv FROM passenger_vacations pv
+    JOIN temp_disembarking_passengers t ON pv.personID = t.personID
+    WHERE pv.sequence = 1;
 
-    -- === Gather Location Information ===
+    -- Step 8: Decrement remaining vacation sequences
+    UPDATE passenger_vacations pv
+    JOIN temp_disembarking_passengers t ON pv.personID = t.personID
+    SET pv.sequence = pv.sequence - 1
+    WHERE pv.sequence > 1;
 
-    -- Get the plane's current location ID
-    select locationID
-    into v_plane_locationID
-    from airplane
-    where tail_num = v_support_tail;
-
-    if v_plane_locationID is null then
-        -- Airplane not found (data integrity issue)
-        leave sp_main;
-    end if;
-
-    -- Get the airport ID corresponding to the plane's current location
-    select airportID
-    into v_current_airportID
-    from airport
-    where locationID = v_plane_locationID;
-
-    if v_current_airportID is null then
-        -- Plane is not at a recognized airport location
-        leave sp_main;
-    end if;
-
-    -- === Identify Passengers to Disembark ===
-
-    -- Find passengers currently located on the plane whose *immediate next*
-    -- vacation destination matches the current airport ID.
-    insert into temp_disembarking_passengers (personID, vacation_sequence)
-    select
-        p.personID,
-        next_vacation.sequence
-    from
-        person p
-    join passenger pass on p.personID = pass.personID -- Make sure it's a passenger
-    join (
-        -- Subquery to find the lowest sequence vacation destination for each person
-        select pv.personID, pv.airportID, pv.sequence
-        from passenger_vacations pv
-        join (
-             -- Find the minimum sequence number for each person who has remaining vacations
-            select personID, min(sequence) as min_seq
-            from passenger_vacations
-            group by personID
-        ) pv_min on pv.personID = pv_min.personID and pv.sequence = pv_min.min_seq
-    ) as next_vacation on p.personID = next_vacation.personID
-    where
-        p.locationID = v_plane_locationID               -- Passenger is on the plane
-        and next_vacation.airportID = v_current_airportID; -- This airport is their immediate next destination
-
-    -- === Update Disembarking Passengers ===
-
-    -- Check if any passengers were found to disembark
-    if (select count(*) from temp_disembarking_passengers) > 0 then
-
-        -- Move the appropriate passengers to the airport location
-        -- (Their location remains the same ID, as the plane IS at the airport location)
-        -- This update isn't strictly necessary if the locationID already matches,
-        -- but confirms their status as being AT the airport, not just 'on the plane at the airport'.
-        -- No actual change needed to person.locationID as they are already at v_plane_locationID.
-
-        -- Update (remove) the completed vacation plan step for the passengers
-        delete pv
-        from passenger_vacations pv
-        join temp_disembarking_passengers tdp on pv.personID = tdp.personID and pv.sequence = tdp.vacation_sequence;
-
-    end if;
-
-    -- Clean up temporary table
-    drop temporary table if exists temp_disembarking_passengers;
-
-	-- Ensure the flight exists
-    -- Ensure that the flight is in the air
-    
-    -- Determine the list of passengers who are disembarking
-	-- Use the following to check:
-		-- Passengers must be on the plane supporting the flight
-        -- Passenger has reached their immediate next destionation airport
-        
-	-- Move the appropriate passengers to the airport
-    -- Update the vacation plans of the passengers
-
-end //
-delimiter ;
+    DROP TEMPORARY TABLE IF EXISTS temp_disembarking_passengers;
+END;
+//
+DELIMITER ;
 
 -- [10] assign_pilot()
 -- -----------------------------------------------------------------------------
