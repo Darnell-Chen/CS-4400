@@ -75,15 +75,12 @@ sp_main: begin
     end if;
 
     if ip_plane_type = 'Boeing' then
-        if ip_neo is not null then
+        if ip_neo is not null or ip_model is null or ip_maintenanced is null then
             leave sp_main;
         end if;
     elseif ip_plane_type = 'Airbus' then
-        if ip_model is not null then
+        if ip_model is not null or ip_neo is null or ip_maintenanced is not null then
             leave sp_main; 
-        end if;
-        if ip_maintenanced is not null then
-             leave sp_main; 
         end if;
     elseif ip_plane_type is not null then
          if ip_model is not null or ip_neo is not null or ip_maintenanced is not null then
