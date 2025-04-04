@@ -1066,8 +1066,8 @@ each airport (ordered by their flight IDs), the earliest and latest arrival time
 amongst all of these flights at each airport, and the list of planes (by their 
 respective flight IDs) that are departing from each airport.*/
 -- ------------------------------------------------------------------------------
-create or replace view flights_on_the_ground (departing_from, num_flights,
-	flight_list, earliest_arrival, latest_arrival, airplane_list) as 
+create or replace view flights_on_the_ground (departing_from, num_flights, 
+	flight_list, earliest_arrival, latest_arrival, airplane_list) as
 select
     t.departing_from,
     count(*) AS num_flights,
@@ -1093,7 +1093,7 @@ from (
     join airplane a on f.support_airline = a.airlineID and f.support_tail = a.tail_num
     where f.airplane_status = 'on_ground' and f.progress < rm.max_seq
 
-	union all
+	union
 
     -- Case 2: If Flight has completed its route, therefore has no legs
     select
