@@ -434,129 +434,86 @@ And we must also ensure that Airbus and general planes have at least one pilot
 assigned, while Boeing must have a minimum of two pilots. If the flight cannot take
 off because of a pilot shortage, then the flight must be delayed for 30 minutes. */
 -- -----------------------------------------------------------------------------
-drop procedure if exists flight_takeoff;
-delimiter //
-create procedure flight_takeoff (in ip_flightID varchar(50))
-sp_main: begin
-	    declare v_airplane_status varchar(100);
-    declare v_current_progress integer;
-    declare v_routeID varchar(50);
-    declare v_support_tail varchar(50);
-    declare v_next_legID varchar(50);
-    declare v_max_legs integer;
-    declare v_distance integer;
-    declare v_speed integer;
-    declare v_plane_type varchar(100);
-    declare v_pilot_count integer;
-    declare v_min_pilots integer;
-    declare v_flight_time_minutes integer;
-    declare v_plane_locationID varchar(50);
-    declare v_current_next_time time;
-    declare v_airport_locationID varchar(50);
+DROP PROCEDURE IF EXISTS flight_takeoff;
+DELIMITER //
+CREATE PROCEDURE flight_takeoff (IN ip_flightID VARCHAR(50))
+sp_main: BEGIN
+    DECLARE v_tail VARCHAR(50);
+    DECLARE v_airline VARCHAR(50);
+    DECLARE v_progress INT;
+    DECLARE v_status VARCHAR(50);
+    DECLARE v_model VARCHAR(50);
+    DECLARE v_speed INT;
+    DECLARE v_route VARCHAR(50);
+    DECLARE v_total_legs INT;
+    DECLARE v_legID VARCHAR(50);
+    DECLARE v_distance INT;
+    DECLARE v_pilot_count INT;
+    DECLARE v_flight_seconds INT;
+    
+    -- Check if flight exists and get relevant info
+    SELECT support_airline, support_tail, progress, airplane_status, routeID, next_time
+    INTO v_airline, v_tail, v_progress, v_status, v_route, @departure_time
+    FROM flight
+    WHERE flightID = ip_flightID;
 
-    -- Ensure that the flight exists
-    select airplane_status, progress, routeID, support_tail, next_time
-    into v_airplane_status, v_current_progress, v_routeID, v_support_tail, v_current_next_time
-    from flight
-    where flightID = ip_flightID;
+    -- Proceed only if status is 'on_ground'
+    IF v_status <> 'on_ground' THEN
+        LEAVE sp_main;
+    END IF;
 
-    if v_routeID is null then
-        leave sp_main; -- Flight doesn't exist
-    end if;
+    -- Check how many total legs are on this route
+    SELECT COUNT(*) INTO v_total_legs
+    FROM route_path
+    WHERE routeID = v_route;
 
-    -- Ensure that the flight is on the ground
-    if v_airplane_status <> 'on_ground' then
-        leave sp_main;
-    end if;
+    -- If the flight has no more legs, exit
+    IF v_progress >= v_total_legs THEN
+        LEAVE sp_main;
+    END IF;
 
-    -- Get airplane details (including its current location)
-    select plane_type, speed, locationID into v_plane_type, v_speed, v_plane_locationID
-    from airplane
-    where tail_num = v_support_tail;
+    -- Get airplane model and speed
+    SELECT model, speed
+    INTO v_model, v_speed
+    FROM airplane
+    WHERE airlineID = v_airline AND tail_num = v_tail;
 
-    -- Verify the plane is at a known airport location
-    select locationID into v_airport_locationID
-    from airport
-    where locationID = v_plane_locationID;
+    -- Count assigned pilots
+    SELECT COUNT(*) INTO v_pilot_count
+    FROM pilot
+    WHERE commanding_flight = ip_flightID;
 
-    if v_airport_locationID is null then
-       leave sp_main; -- Plane not at a recognized airport
-    end if;
+    -- Check pilot requirement
+    IF (v_model LIKE 'Boeing%' AND v_pilot_count < 2) OR
+       (v_model NOT LIKE 'Boeing%' AND v_pilot_count < 1) THEN
+        -- Not enough pilots: delay the flight by 30 minutes
+        UPDATE flight
+        SET next_time = ADDTIME(next_time, '00:30:00')
+        WHERE flightID = ip_flightID;
+        LEAVE sp_main;
+    END IF;
 
-    -- Ensure that the flight has another leg to fly
-    select max(sequence) into v_max_legs from route_path where routeID = v_routeID;
-    if v_max_legs is null or v_current_progress >= v_max_legs then
-        leave sp_main; -- No more legs or route path issue
-    end if;
+    -- Get next leg ID
+    SELECT legID INTO v_legID
+    FROM route_path
+    WHERE routeID = v_route AND sequence = v_progress + 1;
 
-    -- Get the next leg details
-    select legID into v_next_legID
-    from route_path
-    where routeID = v_routeID and sequence = v_current_progress + 1;
+    -- Get distance of the next leg
+    SELECT distance INTO v_distance
+    FROM leg
+    WHERE legID = v_legID;
 
-    if v_next_legID is null then
-        leave sp_main; -- Should not happen if previous check passed, but safe check
-    end if;
-
-    -- Check airplane speed
-    if v_speed is null or v_speed <= 0 then -- Cannot fly without positive speed
-        leave sp_main;
-    end if;
-
-    -- Ensure that there are enough pilots (1 for Airbus and general, 2 for Boeing)
-    select count(*) into v_pilot_count
-    from pilot
-    where commanding_flight = ip_flightID;
-
-    if v_plane_type = 'Boeing' then
-        set v_min_pilots = 2;
-    else
-        set v_min_pilots = 1; -- For Airbus, general, or null/unknown plane_type
-    end if;
-
-    -- If there are not enough pilots, move next time to 30 minutes later
-    if v_pilot_count < v_min_pilots then
-        update flight
-        set next_time = addtime(v_current_next_time, '00:30:00')
-        where flightID = ip_flightID;
-        leave sp_main;
-    end if;
-
-    -- Calculate the flight time using the speed of airplane and distance of leg
-    select distance into v_distance
-    from leg
-    where legID = v_next_legID;
-
-    set v_flight_time_minutes = CEILING((cast(v_distance as double) / v_speed) * 60);
-
-    -- Increment the progress and set the status to in flight
-    -- Update the next time using the calculated flight time (added to current time)
-    update flight
-    set progress = v_current_progress + 1,
+    -- Calculate flight time in seconds (more precise)
+    SET v_flight_seconds = (v_distance * 3600) DIV v_speed; 
+    
+    -- Update flight status and arrival time
+    UPDATE flight
+    SET progress = progress + 1,
         airplane_status = 'in_flight',
-		next_time = addtime(v_current_next_time, SEC_TO_TIME(v_flight_time_minutes * 60)) -- Landing time
-    where flightID = ip_flightID;
-
-    -- Ensure pilots assigned to the flight share the plane's location ID.
-    -- Passengers should have been moved by passengers_board().
-    update person p join pilot pil on p.personID = pil.personID
-    set p.locationID = v_plane_locationID
-    where pil.commanding_flight = ip_flightID;
-
-
-
-	-- Ensure that the flight exists
-    -- Ensure that the flight is on the ground
-    -- Ensure that the flight has another leg to fly
-    -- Ensure that there are enough pilots (1 for Airbus and general, 2 for Boeing)
-		-- If there are not enough, move next time to 30 minutes later
-        
-	-- Increment the progress and set the status to in flight
-    -- Calculate the flight time using the speed of airplane and distance of leg
-    -- Update the next time using the flight time
-
-end //
-delimiter ;
+        next_time = ADDTIME(@departure_time, SEC_TO_TIME(v_flight_seconds))
+    WHERE flightID = ip_flightID;
+END //
+DELIMITER;
 
 -- [8] passengers_board()
 -- -----------------------------------------------------------------------------
