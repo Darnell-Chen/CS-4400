@@ -1045,15 +1045,16 @@ create or replace view flights_in_the_air (departing_from, arriving_at, num_flig
 select
     l.departure as departing_from,
     l.arrival as arriving_at,
-    count(f.flightID) as num_flights,
-    group_concat(f.flightID order by f.flightID separator ',') as flight_list,
+    count(distinct f.flightID) as num_flights,
+    group_concat(distinct f.flightID order by f.flightID separator ',') as flight_list,
     min(f.next_time) as earliest_arrival,
     max(f.next_time) as latest_arrival,
-    group_concat(f.support_tail order by f.flightID separator ',') as airplane_list
+    group_concat(distinct concat(a.locationID) order by f.flightID separator ',') as airplane_list
 from flight f
-join route_path rp on f.routeID = rp.routeID and f.progress = rp.sequence
-join leg l on rp.legID = l.legID
-where f.airplane_status = 'in_flight'
+	join route_path rp on f.routeID = rp.routeID and f.progress = rp.sequence
+	join leg l on rp.legID = l.legID
+    join airplane a on (f.support_airline = a.airlineID and f.support_tail = a.tail_num)
+where f.airplane_status = 'in_flight' and f.progress = rp.sequence
 group by l.departure, l.arrival;
 
 -- [15] flights_on_the_ground()
