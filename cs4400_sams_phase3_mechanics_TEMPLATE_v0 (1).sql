@@ -75,12 +75,15 @@ sp_main: begin
     end if;
 
     if ip_plane_type = 'Boeing' then
-        if ip_neo is not null or ip_model is null or ip_maintenanced is null then
+        if ip_neo is not null then
             leave sp_main;
         end if;
     elseif ip_plane_type = 'Airbus' then
-        if ip_model is not null or ip_neo is null or ip_maintenanced is not null then
+        if ip_model is not null then
             leave sp_main; 
+        end if;
+        if ip_maintenanced is not null then
+             leave sp_main; 
         end if;
     elseif ip_plane_type is not null then
          if ip_model is not null or ip_neo is not null or ip_maintenanced is not null then
@@ -403,14 +406,6 @@ declare v_routeID varchar(50);
         next_time = addtime(v_current_next_time, '01:00:00')
     where flightID = ip_flightID;
 
-    update airplane
-    set locationID = v_arrival_loc
-    where airlineID = v_support_airline and tail_num = v_support_tail;
-
-    update person
-    set locationID = v_arrival_loc
-    where locationID = v_plane_intrinsic_loc;
-
 	-- Ensure that the flight exists
     -- Ensure that the flight is in the air
     
@@ -572,7 +567,7 @@ BEGIN
       AND pe.locationID NOT LIKE 'plane_%';
     
     -- SECTION 4: Board passengers if conditions met
-    IF v_available_seats > 0 AND v_passengers_to_board_count > 0 THEN
+    IF v_available_seats > 0 AND v_passengers_to_board_count > 0 AND v_available_seats >= v_passengers_to_board_count THEN
         -- Insert eligible passengers into temp table ordered by funds
         INSERT INTO temp_passengers_to_board
         SELECT p.personID, p.funds
@@ -594,6 +589,7 @@ BEGIN
         UPDATE passenger p
         JOIN temp_passengers_to_board t ON p.personID = t.personID
         SET p.funds = p.funds - v_flight_cost;
+	
         
         -- Update airline revenue
         UPDATE airline a
@@ -646,12 +642,12 @@ sp_main: BEGIN
     JOIN leg l ON rp.legID = l.legID
     WHERE f.flightID = ip_flightID;
 
-    -- Step 3: Get airplane’s current location
+    -- Step 3: Get airplane's current location
     SELECT a.locationID INTO v_airplane_location
     FROM airplane a
     WHERE a.airlineID = v_support_airline AND a.tail_num = v_support_tail;
 
-    -- Step 4: Get airport’s locationID
+    -- Step 4: Get airport's locationID
     SELECT ap.locationID INTO v_disembark_location
     FROM airport ap
     WHERE ap.airportID = v_flight_arrival;
@@ -955,15 +951,15 @@ drop procedure if exists simulation_cycle;
 delimiter //
 create procedure simulation_cycle ()
 sp_main: begin
-declare selected_flightID varchar(50);
+    declare selected_flightID varchar(50);
     declare selected_status varchar(100);
     declare current_progress integer;
-    declare routeID varchar(50);
+    declare selected_routeID varchar(50);
     declare max_legs integer;
 
     -- Identify the next flight to process
     select flightID, airplane_status, progress, routeID
-    into selected_flightID, selected_status, current_progress, routeID
+    into selected_flightID, selected_status, current_progress, selected_routeID
     from flight
     where next_time is not null -- Consider only flights with a scheduled next action
     order by next_time asc,
@@ -977,8 +973,13 @@ declare selected_flightID varchar(50);
     end if;
 
     -- Get the total number of legs for the route
-    select max(sequence) into max_legs from route_path where routeID = routeID;
-    if max_legs is null then set max_legs = 0; end if; -- Handle routes with no paths if necessary
+    select max(sequence) into max_legs 
+    from route_path 
+    where routeID = selected_routeID;
+    
+    if max_legs is null then 
+        set max_legs = 0; 
+    end if; -- Handle routes with no paths if necessary
 
     -- Process based on status
     if selected_status = 'in_flight' then
@@ -986,8 +987,7 @@ declare selected_flightID varchar(50);
         call flight_landing(selected_flightID);
         call passengers_disembark(selected_flightID);
 
-        -- Re-fetch progress after landing as flight_landing might update it (though it shouldn't based on its description)
-        -- We need to check if it *just* completed its final leg *after* landing.
+        -- Re-fetch progress after landing as flight_landing might update it
         select progress into current_progress from flight where flightID = selected_flightID;
 
         -- Check if it has now reached the end *after* landing
