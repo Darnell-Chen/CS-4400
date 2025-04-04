@@ -1151,24 +1151,17 @@ those flights by flight ID, and the sequence of airports visited by the route. *
 -- -----------------------------------------------------------------------------
 create or replace view route_summary (route, num_legs, leg_sequence, route_length,
 	num_flights, flight_list, airport_sequence) as
-    with RouteLegs as (
-    -- Aggregate leg information for each route
+
+with RouteLegs as (
     select
         rp.routeID,
         count(rp.legID) as num_legs,
-        -- Comma-separated list of leg IDs, ordered by their sequence in the route
         group_concat(rp.legID order by rp.sequence separator ',') as leg_sequence,
-        -- Sum of distances of all legs in the route
         sum(l.distance) as route_length,
-        -- Get the departure airport of the very first leg (sequence = 1)
-        group_concat(
-            case
-                when rp.sequence = 1 then l.departure
-                else null
-            end order by rp.sequence separator '' -- Effectively picks the single departure
-        ) as first_departure,
-        -- Get the sequence of arrival airports, ordered by leg sequence
-        group_concat(l.arrival order by rp.sequence separator '->') as arrival_sequence
+        group_concat(concat(l.departure, '->', l.arrival) 
+                     order by rp.sequence                 
+                     separator ',')                       
+                 as airport_sequence_formatted
     from route_path rp
     join leg l on rp.legID = l.legID
     group by rp.routeID
@@ -1177,28 +1170,23 @@ RouteFlights as (
     -- Aggregate flight information for each route
     select
         f.routeID,
-        -- Count distinct flights assigned to the route
+        -- Count unique flights assigned to the route
         count(distinct f.flightID) as num_flights,
-        -- Comma-separated list of distinct flight IDs, ordered alphabetically
+        -- Comma-separated list of unique flight IDs, ordered alphabetically
         group_concat(distinct f.flightID order by f.flightID separator ',') as flight_list
-    from flight f -- Alias added for clarity
+    from flight f
     group by f.routeID
 )
--- Combine Route, RouteLegs, and RouteFlights information
 select
     r.routeID as route,
-    -- Use IFNULL in case a route has no legs defined in route_path
     ifnull(rl.num_legs, 0) as num_legs,
     rl.leg_sequence, -- Will be NULL if no legs
     rl.route_length, -- Will be NULL if no legs
-    -- Use IFNULL in case a route has no flights assigned
+    -- Use IFNULL to show 0 if a route has no flights assigned
     ifnull(rf.num_flights, 0) as num_flights,
-    rf.flight_list, -- Will be NULL if no flights
-    -- Construct the full airport sequence: First Departure -> Arrival 1 -> Arrival 2 -> ...
-    -- If rl.first_departure is NULL (no legs), the result of CONCAT is NULL, which is correct.
-    concat(rl.first_departure, '->', rl.arrival_sequence) as airport_sequence
+    rf.flight_list, 
+    rl.airport_sequence_formatted as airport_sequence 
 from route r
--- Left join to include routes even if they have no legs or no flights
 left join RouteLegs rl on r.routeID = rl.routeID
 left join RouteFlights rf on r.routeID = rf.routeID;
 
