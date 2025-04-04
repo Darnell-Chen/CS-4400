@@ -881,96 +881,85 @@ and have their location updated for the appropriate airplane. */
 -- -----------------------------------------------------------------------------
 drop procedure if exists assign_pilot;
 delimiter //
-create procedure assign_pilot (in ip_flightID varchar(50), ip_personID varchar(50))
+create procedure assign_pilot (in ip_flightID varchar(50), in ip_personID varchar(50))
 sp_main: begin
-declare v_airplane_status varchar(100);
-    declare v_current_progress integer;
-    declare v_routeID varchar(50);
-    declare v_support_tail varchar(50);
-    declare v_max_legs integer;
-    declare v_pilot_current_flight varchar(50);
-    declare v_plane_type varchar(100);
-    declare v_plane_locationID varchar(50);
-    declare v_pilot_locationID varchar(50);
-    declare v_airport_locationID varchar(50);
-    declare v_has_license integer;
 
-    select airplane_status, progress, routeID, support_tail
-    into v_airplane_status, v_current_progress, v_routeID, v_support_tail
-    from flight
-    where flightID = ip_flightID;
-
-    if v_routeID is null then
-        leave sp_main;
-    end if;
-
-    if v_airplane_status <> 'on_ground' then
-        leave sp_main;
-    end if;
-
-    select max(sequence) into v_max_legs from route_path where routeID = v_routeID;
-    if v_current_progress >= v_max_legs then
-        leave sp_main;
-    end if;
-
-    select commanding_flight into v_pilot_current_flight
-    from pilot
-    where personID = ip_personID;
-
-    if v_pilot_current_flight is not null then
-        leave sp_main;
-    end if;
-
-    select plane_type, locationID into v_plane_type, v_plane_locationID
-    from airplane
-    where tail_num = v_support_tail;
-
-    if v_plane_locationID is null then -- Plane needs a location
-        leave sp_main;
-    end if;
-
-    select locationID into v_airport_locationID
-    from airport
-    where locationID = v_plane_locationID;
-
-    if v_airport_locationID is null then -- Plane must be at an airport
-       leave sp_main;
-    end if;
-
-    select locationID into v_pilot_locationID
-    from person
-    where personID = ip_personID;
-
-    if v_pilot_locationID <> v_airport_locationID then
-        leave sp_main;
-    end if;
-
-    select count(*) into v_has_license
-    from pilot_licenses
-    where personID = ip_personID and (license = v_plane_type or license = 'general');
-
-    if v_has_license = 0 then
-        leave sp_main;
-    end if;
-
-    update pilot
-    set commanding_flight = ip_flightID
-    where personID = ip_personID;
-
-    update person
-    set locationID = v_plane_locationID
-    where personID = ip_personID;
-
+	declare t_support_airline varchar(50);
+    declare t_support_tail varchar(50);
+    declare t_plane_type varchar(50);
+    declare person_location varchar(50);
+    declare plane_location varchar(50);
+    declare plane_leg varchar(50);
+    declare plane_sequence int;
+    declare plane_routeID varchar(50);
+    declare plane_legID varchar(50);
+    declare person_airport varchar(50);
+    declare plane_airport varchar(50);
+    declare first_leg varchar(50);
 
 	-- Ensure the flight exists
+    if ip_flightID not in (select flightID from flight) 
+		then leave sp_main;
+    end if;
+    
     -- Ensure that the flight is on the ground
+    if (select airplane_status from flight where flightID = ip_flightID) != 'on_ground' then
+		leave sp_main;
+	end if;
+    
+    
     -- Ensure that the flight has further legs to be flown
+    if (select progress from flight where flightID = ip_flightID) >= (
+		select sequence from route_path where routeID = (select routeID from flight where flightID = ip_flightID)
+        order by sequence asc limit 1
+	) then leave sp_main;
+    end if;
     
     -- Ensure that the pilot exists and is not already assigned
+    if ip_personID not in (select personID from pilot) or (select commanding_flight from pilot where personID = ip_personID) is not null then
+		leave sp_main;
+	end if;
+    
 	-- Ensure that the pilot has the appropriate license
+	select support_airline, support_tail into t_support_airline, t_support_tail from flight where ip_flightID = flightID;
+    select plane_type into t_plane_type from airplane where (tail_num = t_support_tail) and (airlineID = t_support_airline);
+    
+    if t_plane_type not in (select license from pilot_licenses where personID = ip_personID) then
+		leave sp_main;
+	end if;
+    
     -- Ensure the pilot is located at the airport of the plane that is supporting the flight
     
+    select locationID into person_location from person where personID = ip_personID;
+    select locationID into plane_location from airplane where airlineID = t_support_airline and tail_num = t_support_tail;
+    
+    if person_location is null or plane_location is null then
+		leave sp_main;
+	end if;
+    
+    select progress into plane_sequence from flight where flightID = ip_flightID;
+    select routeID into plane_routeID from flight where flightID = ip_flightID;
+    
+    set plane_sequence = plane_sequence + 1;
+    
+	select legID into plane_legID from route_path where sequence = plane_sequence and routeID = plane_routeID;
+	select departure into plane_airport from leg where legID = plane_legID;
+    
+    select airportID into person_airport from airport where locationID = person_location;
+    
+    if (person_airport != plane_airport) then
+		leave sp_main;
+	end if;
+    
     -- Assign the pilot to the flight and update their location to be on the plane
+    
+    update pilot
+		set commanding_flight = ip_flightID
+		where personID = ip_personID;
+	
+    update person
+		set locationID = plane_location
+        where personID = ip_personID;
 
 end //
 delimiter ;
@@ -984,88 +973,65 @@ drop procedure if exists recycle_crew;
 delimiter //
 create procedure recycle_crew (in ip_flightID varchar(50))
 sp_main: begin
-declare v_airplane_status varchar(100);
-    declare v_current_progress integer;
-    declare v_routeID varchar(50);
-    declare v_support_tail varchar(50);
-    declare v_max_legs integer;
-    declare v_passengers_on_board integer;
-    declare v_plane_locationID varchar(50);
-    declare v_airport_locationID varchar(50);
-    declare v_pilotID varchar(50);
-    declare v_done integer default false;
 
-    declare cur_pilots cursor for
-        select personID from pilot where commanding_flight = ip_flightID;
-    declare continue handler for not found set v_done = true;
-
-    select airplane_status, progress, routeID, support_tail
-    into v_airplane_status, v_current_progress, v_routeID, v_support_tail
-    from flight
-    where flightID = ip_flightID;
-
-    if v_routeID is null then
-        leave sp_main;
-    end if;
-
-    if v_airplane_status <> 'on_ground' then
-        leave sp_main;
-    end if;
-
-    select max(sequence) into v_max_legs from route_path where routeID = v_routeID;
-    if v_current_progress < v_max_legs then
-        leave sp_main;
-    end if;
-
-    select locationID into v_plane_locationID
-    from airplane
-    where tail_num = v_support_tail;
-
-    if v_plane_locationID is null then
-        leave sp_main;
-    end if;
-
-    select locationID into v_airport_locationID
-    from airport
-    where locationID = v_plane_locationID;
-
-    if v_airport_locationID is null then
-       leave sp_main;
-    end if;
-
-    select count(*) into v_passengers_on_board
-    from person p join passenger ps on p.personID = ps.personID
-    where p.locationID = v_plane_locationID;
-
-    if v_passengers_on_board > 0 then
-        leave sp_main;
-    end if;
-
-    open cur_pilots;
-    recycle_loop: loop
-        fetch cur_pilots into v_pilotID;
-        if v_done then
-            leave recycle_loop;
-        end if;
-
-        update pilot
-        set commanding_flight = NULL
-        where personID = v_pilotID;
-
-        update person
-        set locationID = v_airport_locationID
-        where personID = v_pilotID;
-
-    end loop;
-    close cur_pilots;
-
+	declare currStatus varchar(50);
+    declare maxSequence int;
+    declare currSequence int;
+    declare currRouteID varchar(50);
+    declare plane_location varchar(50);
+    declare t_airlineID varchar(50);
+    declare t_tail_num varchar(50);
+    declare t_numSeated int;
+    declare currAirport varchar(50);
+    declare currLeg varchar(50);
+    
 	-- Ensure that the flight is on the ground
+    select airplane_status into currStatus from flight where ip_flightID = flightID;
+    if currStatus != 'on_ground' then 
+		leave sp_main;
+	end if;
+    
     -- Ensure that the flight does not have any more legs
+    select progress into currSequence from flight where ip_flightID = flightID;
+    select routeID into currRouteID from flight where ip_flightID = flightID;
+    select max(sequence) into maxSequence from route_path where routeID = currRouteID;
+    
+    if (currSequence < maxSequence) then
+		leave sp_main;
+	end if;
     
     -- Ensure that the flight is empty of passengers
+    select support_airline into t_airlineID from flight where flightID = ip_flightID;
+    select support_tail into t_tail_num from flight where flightID = ip_flightID;
     
-    -- Update assignements of all pilots
-    -- Move all pilots to the airport the plane of the flight is located at
+    select locationID into plane_location from airplane where airlineID = t_airlineID and tail_num = t_tail_num;
+    
+    if plane_location is null then
+		leave sp_main;
+	end if;
+    
+    select count(*) into t_numSeated from 
+    (select s.personID, p.locationID from passenger s join person p on p.personID = s.personID) as j 
+    where j.locationID = plane_location;
+    
+    if t_numSeated > 0 then
+		leave sp_main;
+	end if;
+    
+	-- Move all pilots to the airport the plane of the flight is located at
+    select legID into currLeg from route_path where routeID = currRouteID and sequence = currSequence;
+    select arrival into currAirport from leg where legID = currLeg;
+    
+    
+    update person p join pilot e on e.personID = p.personID
+    set p.locationID = (select locationID from airport where airportID = currAirport)
+    where commanding_flight = ip_flightID;
+    
+    -- Update assignments of all pilots
+    update pilot
+    set commanding_flight = null
+    where commanding_flight = ip_flightID;
+    
 
 end //
 delimiter ;
