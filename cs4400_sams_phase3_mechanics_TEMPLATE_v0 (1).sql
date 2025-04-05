@@ -448,7 +448,10 @@ sp_main: BEGIN
     INTO v_airline, v_tail, v_progress, v_status, v_route, @departure_time
     FROM flight
     WHERE flightID = ip_flightID;
-
+    
+    IF v_airline IS NULL THEN
+		LEAVE sp_main;
+	END IF;
     -- Proceed only if status is 'on_ground'
     IF v_status <> 'on_ground' THEN
         LEAVE sp_main;
@@ -458,32 +461,32 @@ sp_main: BEGIN
     SELECT COUNT(*) INTO v_total_legs
     FROM route_path
     WHERE routeID = v_route;
+    
+    -- Count assigned pilots
+	SELECT COUNT(*) INTO v_pilot_count
+	FROM pilot
+	WHERE commanding_flight = ip_flightID;
 
     -- If the flight has no more legs, exit
     IF v_progress >= v_total_legs THEN
         LEAVE sp_main;
     END IF;
 
-    -- Get airplane model and speed
-    SELECT model, speed
-    INTO v_model, v_speed
-    FROM airplane
-    WHERE airlineID = v_airline AND tail_num = v_tail;
+    -- Get airplane model, type, and speed
+	SELECT model, plane_type, speed
+	INTO v_model, @plane_type, v_speed
+	FROM airplane
+	WHERE airlineID = v_airline AND tail_num = v_tail;
 
-    -- Count assigned pilots
-    SELECT COUNT(*) INTO v_pilot_count
-    FROM pilot
-    WHERE commanding_flight = ip_flightID;
-
-    -- Check pilot requirement
-    IF (v_model LIKE 'Boeing%' AND v_pilot_count < 2) OR
-       (v_model NOT LIKE 'Boeing%' AND v_pilot_count < 1) THEN
-        -- Not enough pilots: delay the flight by 30 minutes
-        UPDATE flight
-        SET next_time = ADDTIME(next_time, '00:30:00')
-        WHERE flightID = ip_flightID;
-        LEAVE sp_main;
-    END IF;
+	-- Check pilot requirement
+	IF (@plane_type = 'Boeing' AND v_pilot_count < 2) OR
+	   (@plane_type != 'Boeing' AND v_pilot_count < 1) THEN
+		-- Not enough pilots: delay the flight by 30 minutes
+		UPDATE flight
+		SET next_time = ADDTIME(next_time, '00:30:00')
+		WHERE flightID = ip_flightID;
+		LEAVE sp_main;
+	END IF;
 
     -- Get next leg ID
     SELECT legID INTO v_legID
