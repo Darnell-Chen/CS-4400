@@ -467,85 +467,99 @@ DROP PROCEDURE IF EXISTS flight_takeoff;
 DELIMITER //
 CREATE PROCEDURE flight_takeoff (IN ip_flightID VARCHAR(50))
 sp_main: BEGIN
-    DECLARE v_tail VARCHAR(50);
+    -- Declare necessary variables
     DECLARE v_airline VARCHAR(50);
+    DECLARE v_tail VARCHAR(50);
     DECLARE v_progress INT;
     DECLARE v_status VARCHAR(50);
-    DECLARE v_model VARCHAR(50);
-    DECLARE v_speed INT;
     DECLARE v_route VARCHAR(50);
+    DECLARE v_departure_time TIME; -- Store the original takeoff time
     DECLARE v_total_legs INT;
-    DECLARE v_legID VARCHAR(50);
-    DECLARE v_distance INT;
+    DECLARE v_plane_type VARCHAR(100);
+    DECLARE v_speed INT;
     DECLARE v_pilot_count INT;
+    DECLARE v_next_legID VARCHAR(50);
+    DECLARE v_distance INT;
     DECLARE v_flight_seconds INT;
-    
-    -- Check if flight exists and get relevant info
+    DECLARE v_landing_time TIME;
+
+    -- 1. Fetch core flight info
     SELECT support_airline, support_tail, progress, airplane_status, routeID, next_time
-    INTO v_airline, v_tail, v_progress, v_status, v_route, @departure_time
+    INTO v_airline, v_tail, v_progress, v_status, v_route, v_departure_time
     FROM flight
     WHERE flightID = ip_flightID;
-    
-    IF v_airline IS NULL THEN
-		LEAVE sp_main;
-	END IF;
-    -- Proceed only if status is 'on_ground'
+
+    IF v_airline IS NULL THEN -- If the SELECT INTO failed to find the flight
+        LEAVE sp_main;
+    END IF;
+
     IF v_status <> 'on_ground' THEN
         LEAVE sp_main;
     END IF;
 
-    -- Check how many total legs are on this route
-    SELECT COUNT(*) INTO v_total_legs
-    FROM route_path
-    WHERE routeID = v_route;
-    
-    -- Count assigned pilots
-	SELECT COUNT(*) INTO v_pilot_count
-	FROM pilot
-	WHERE commanding_flight = ip_flightID;
-
-    -- If the flight has no more legs, exit
+    SELECT COUNT(*) INTO v_total_legs FROM route_path WHERE routeID = v_route;
     IF v_progress >= v_total_legs THEN
+        LEAVE sp_main; -- No more legs to take off for
+    END IF;
+
+    SELECT plane_type, speed
+    INTO v_plane_type, v_speed
+    FROM airplane
+    WHERE airlineID = v_airline AND tail_num = v_tail;
+
+    IF v_plane_type IS NULL AND v_speed IS NULL THEN -- Check if SELECT INTO failed
+         -- A more precise check might be needed if one could be null but not the other legitimately
+         -- Or check FOUND_ROWS() immediately after SELECT INTO if preferred
         LEAVE sp_main;
     END IF;
 
-    -- Get airplane model, type, and speed
-	SELECT model, plane_type, speed
-	INTO v_model, @plane_type, v_speed
-	FROM airplane
-	WHERE airlineID = v_airline AND tail_num = v_tail;
+    IF v_speed IS NULL OR v_speed <= 0 THEN
+        LEAVE sp_main; -- Cannot calculate flight time with invalid speed
+    END IF;
 
-	-- Check pilot requirement
-	IF (@plane_type = 'Boeing' AND v_pilot_count < 2) OR
-	   (@plane_type != 'Boeing' AND v_pilot_count < 1) THEN
-		-- Not enough pilots: delay the flight by 30 minutes
-		UPDATE flight
-		SET next_time = ADDTIME(next_time, '00:30:00')
-		WHERE flightID = ip_flightID;
-		LEAVE sp_main;
-	END IF;
+    SELECT COUNT(*) INTO v_pilot_count
+    FROM pilot
+    WHERE commanding_flight = ip_flightID;
 
-    -- Get next leg ID
-    SELECT legID INTO v_legID
+    IF (v_plane_type = 'Boeing' AND v_pilot_count < 2) OR
+       (v_plane_type <> 'Boeing' AND v_pilot_count < 1) THEN -- Includes NULL plane_type needing >=1 pilot
+        -- Not enough pilots: delay the flight by 30 minutes and exit
+        UPDATE flight
+        SET next_time = ADDTIME(v_departure_time, '00:30:00')
+        WHERE flightID = ip_flightID;
+        LEAVE sp_main;
+    END IF;
+
+    SELECT legID INTO v_next_legID
     FROM route_path
     WHERE routeID = v_route AND sequence = v_progress + 1;
 
-    -- Get distance of the next leg
+    IF v_next_legID IS NULL THEN
+        LEAVE sp_main; -- Should not happen if progress check passed, but safety check
+    END IF;
+
     SELECT distance INTO v_distance
     FROM leg
-    WHERE legID = v_legID;
+    WHERE legID = v_next_legID;
 
-    -- Calculate flight time in seconds (more precise)
-    SET v_flight_seconds = (v_distance * 3600) DIV v_speed; 
-    
-    -- Update flight status and arrival time
+    IF v_distance IS NULL OR v_distance < 0 THEN -- Allowing 0 distance based on EC_FT_16 result
+        LEAVE sp_main; -- Leg details missing or distance invalid
+    END IF;
+
+
+    -- Calculate landing time
+    SET v_flight_seconds = (v_distance * 3600) DIV v_speed; -- Integer division for seconds
+    SET v_landing_time = ADDTIME(v_departure_time, SEC_TO_TIME(v_flight_seconds));
+
+    -- Update flight status, progress, and calculated next_time (landing time)
     UPDATE flight
-    SET progress = progress + 1,
+    SET progress = v_progress + 1,
         airplane_status = 'in_flight',
-        next_time = ADDTIME(@departure_time, SEC_TO_TIME(v_flight_seconds))
+        next_time = v_landing_time
     WHERE flightID = ip_flightID;
+
 END //
-DELIMITER;
+DELIMITER ;
 
 -- [8] passengers_board()
 -- -----------------------------------------------------------------------------
