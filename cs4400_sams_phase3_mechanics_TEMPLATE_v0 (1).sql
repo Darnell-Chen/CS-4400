@@ -602,6 +602,7 @@ BEGIN
     JOIN passenger_vacations pv ON p.personID = pv.personID
     WHERE pe.locationID = v_boarding_location
       AND pv.airportID = v_flight_arrival
+      AND pv.sequence = 1
       AND p.funds >= v_flight_cost
       AND pe.locationID NOT LIKE 'plane_%';
     
@@ -616,6 +617,7 @@ BEGIN
         WHERE pe.locationID = v_boarding_location
           AND pv.airportID = v_flight_arrival
           AND p.funds >= v_flight_cost
+	  AND pv.sequence = 1
           AND pe.locationID NOT LIKE 'plane_%'
         ORDER BY p.funds DESC
         LIMIT v_available_seats;
