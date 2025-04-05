@@ -37,6 +37,7 @@ begin
 end //
 delimiter ;
 
+
 -- [1] add_airplane()
 -- -----------------------------------------------------------------------------
 /* This stored procedure creates a new airplane.  A new airplane must be sponsored
@@ -46,71 +47,84 @@ might also have other factors depending on it's type, like the model and the eng
 Finally, an airplane must have a new and database-wide unique location
 since it will be used to carry passengers. */
 -- -----------------------------------------------------------------------------
-drop procedure if exists add_airplane;
-delimiter //
-create procedure add_airplane (in ip_airlineID varchar(50), in ip_tail_num varchar(50),
-	in ip_seat_capacity integer, in ip_speed integer, in ip_locationID varchar(50),
-    in ip_plane_type varchar(100), in ip_maintenanced boolean, in ip_model varchar(50),
-    in ip_neo boolean)
-sp_main: begin
-	if not exists( select 1 from airline where airlineID=ip_airlineID) then
-		leave sp_main;
-	end if; 
-    if exists (select 1 from airplane where airlineID = ip_airlineID and tail_num = ip_tail_num) then
-        leave sp_main; 
-    end if;
 
-    if ip_seat_capacity is null or ip_seat_capacity <= 0 then
-        leave sp_main; 
-    end if;
-    if ip_speed is null or ip_speed <= 0 then
-        leave sp_main; 
-    end if;
+-- Ensure that the plane type is valid: Boeing, Airbus, or neither
+-- Ensure that the type-specific attributes are accurate for the type
+-- Ensure that the airplane and location values are new and unique
+-- Add airplane and location into respective tables
 
-    if ip_locationID is null then
-        leave sp_main;
-    end if;
-    if exists (select 1 from location where locationID = ip_locationID) then
-        leave sp_main; 
-    end if;
+DROP PROCEDURE IF EXISTS add_airplane;
+DELIMITER //
 
-    if ip_plane_type = 'Boeing' then
-        if ip_neo is not null then
-            leave sp_main;
-        end if;
-    elseif ip_plane_type = 'Airbus' then
-        if ip_model is not null then
-            leave sp_main; 
-        end if;
-        if ip_maintenanced is not null then
-             leave sp_main; 
-        end if;
-    elseif ip_plane_type is not null then
-         if ip_model is not null or ip_neo is not null or ip_maintenanced is not null then
-              leave sp_main;
-         end if;
-    else 
-         if ip_model is not null or ip_neo is not null or ip_maintenanced is not null then
-              leave sp_main;
-         end if;
-    end if;
+CREATE PROCEDURE add_airplane (
+    IN ip_airlineID VARCHAR(50),
+    IN ip_tail_num VARCHAR(50),
+    IN ip_seat_capacity INTEGER,
+    IN ip_speed INTEGER,
+    IN ip_locationID VARCHAR(50),
+    IN ip_plane_type VARCHAR(100),
+    IN ip_maintenanced BOOLEAN,
+    IN ip_model VARCHAR(50),
+    IN ip_neo BOOLEAN
+)
+sp_main: BEGIN
 
-    insert into location (locationID) values (ip_locationID);
+    IF NOT EXISTS (SELECT 1 FROM airline WHERE airlineID = ip_airlineID) THEN
+        LEAVE sp_main;
+    END IF;
 
-    insert into airplane (airlineID, tail_num, seat_capacity, speed, locationID, plane_type, maintenanced, model, neo)
-    values (ip_airlineID, ip_tail_num, ip_seat_capacity, ip_speed, ip_locationID, ip_plane_type, ip_maintenanced, ip_model, ip_neo);
+    IF ip_tail_num IS NULL OR ip_tail_num = '' THEN
+         LEAVE sp_main;
+    END IF;
 
-    
+    IF EXISTS (SELECT 1 FROM airplane WHERE airlineID = ip_airlineID AND tail_num = ip_tail_num) THEN
+        LEAVE sp_main;
+    END IF;
 
+    IF ip_seat_capacity IS NULL OR ip_seat_capacity <= 0 THEN
+        LEAVE sp_main;
+    END IF;
 
-	-- Ensure that the plane type is valid: Boeing, Airbus, or neither
-    -- Ensure that the type-specific attributes are accurate for the type
-    -- Ensure that the airplane and location values are new and unique
-    -- Add airplane and location into respective tables
+    IF ip_speed IS NULL OR ip_speed <= 0 THEN
+        LEAVE sp_main;
+    END IF;
 
-end //
-delimiter ;
+    IF ip_locationID IS NULL OR ip_locationID = '' THEN
+        LEAVE sp_main;
+    END IF;
 
+    IF EXISTS (SELECT 1 FROM location WHERE locationID = ip_locationID) THEN
+        LEAVE sp_main;
+    END IF;
+
+    IF ip_plane_type = 'Boeing' THEN
+        IF ip_neo IS NOT NULL THEN
+            LEAVE sp_main;
+        END IF;
+    ELSEIF ip_plane_type = 'Airbus' THEN
+        IF ip_model IS NOT NULL THEN
+            LEAVE sp_main;
+        END IF;
+        IF ip_maintenanced IS NOT NULL THEN
+            LEAVE sp_main;
+        END IF;
+    ELSE
+        IF ip_model IS NOT NULL OR ip_neo IS NOT NULL OR ip_maintenanced IS NOT NULL THEN
+            LEAVE sp_main;
+        END IF;
+    END IF;
+
+    START TRANSACTION;
+
+    INSERT INTO location (locationID) VALUES (ip_locationID);
+
+    INSERT INTO airplane (airlineID, tail_num, seat_capacity, speed, locationID, plane_type, maintenanced, model, neo)
+    VALUES (ip_airlineID, ip_tail_num, ip_seat_capacity, ip_speed, ip_locationID, ip_plane_type, ip_maintenanced, ip_model, ip_neo);
+
+    COMMIT;
+
+END //
+DELIMITER ;
 -- [2] add_airport()
 -- -----------------------------------------------------------------------------
 /* This stored procedure creates a new airport.  A new airport must have a unique
@@ -118,36 +132,59 @@ identifier along with a new and database-wide unique location if it will be used
 to support airplane takeoffs and landings.  An airport may have a longer, more
 descriptive name.  An airport must also have a city, state, and country designation. */
 -- -----------------------------------------------------------------------------
-drop procedure if exists add_airport;
-delimiter //
-create procedure add_airport (in ip_airportID char(3), in ip_airport_name varchar(200),
-    in ip_city varchar(100), in ip_state varchar(100), in ip_country char(3), in ip_locationID varchar(50))
-sp_main: begin
-if exists (select 1 from airport where airportID = ip_airportID) then
-        leave sp_main; 
-    end if;
+-- Ensure that the airport and location values are new and unique
+-- Add airport and location into respective tables
+DROP PROCEDURE IF EXISTS add_airport;
+DELIMITER //
 
-    if ip_city is null or ip_state is null or ip_country is null then
-        leave sp_main; 
-    end if;
+CREATE PROCEDURE add_airport (
+    IN ip_airportID CHAR(3),
+    IN ip_airport_name VARCHAR(200),
+    IN ip_city VARCHAR(100),
+    IN ip_state VARCHAR(100),
+    IN ip_country CHAR(3),
+    IN ip_locationID VARCHAR(50)
+)
+sp_main: BEGIN
 
-    if ip_locationID is not null then
-        if exists (select 1 from location where locationID = ip_locationID) then
-            leave sp_main; 
-        end if;
+    IF ip_airportID IS NULL OR ip_airportID = '' THEN
+        LEAVE sp_main;
+    END IF;
 
-        insert into location (locationID) values (ip_locationID);
-    end if;
+    IF ip_airport_name IS NULL OR ip_airport_name = '' THEN
+        LEAVE sp_main;
+    END IF;
 
-   
-    insert into airport (airportID, airport_name, city, state, country, locationID)
-    values (ip_airportID, ip_airport_name, ip_city, ip_state, ip_country, ip_locationID);
+    IF ip_city IS NULL OR ip_city = '' OR
+       ip_state IS NULL OR ip_state = '' OR
+       ip_country IS NULL OR ip_country = '' THEN
+        LEAVE sp_main;
+    END IF;
 
-	-- Ensure that the airport and location values are new and unique
-    -- Add airport and location into respective tables
+    IF ip_locationID IS NULL OR ip_locationID = '' THEN
+        LEAVE sp_main;
+    END IF;
 
-end //
-delimiter ;
+    IF EXISTS (SELECT 1 FROM airport WHERE BINARY airportID = BINARY ip_airportID) THEN
+        LEAVE sp_main;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM location WHERE BINARY locationID = BINARY ip_locationID) THEN
+        LEAVE sp_main;
+    END IF;
+
+
+    START TRANSACTION;
+
+    INSERT INTO location (locationID) VALUES (ip_locationID);
+
+    INSERT INTO airport (airportID, airport_name, city, state, country, locationID)
+    VALUES (ip_airportID, ip_airport_name, ip_city, ip_state, ip_country, ip_locationID);
+
+    COMMIT;
+
+END //
+DELIMITER ;
 
 -- [3] add_person()
 -- -----------------------------------------------------------------------------
