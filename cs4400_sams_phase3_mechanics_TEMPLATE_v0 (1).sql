@@ -540,6 +540,14 @@ BEGIN
         funds INT,
         PRIMARY KEY (personID)
     );
+
+	SELECT COUNT(*) INTO v_flight_exists
+	    FROM flight 
+	    WHERE flightID = ip_flightID;
+	
+	    IF v_flight_exists = 0 THEN
+	        leave sp_main;
+	    END IF;
     
     -- SECTION 1: Get flight and airplane information
     SELECT l.departure, l.arrival, f.cost, a.seat_capacity, ap.locationID, a.locationID
